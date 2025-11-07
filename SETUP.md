@@ -257,9 +257,30 @@ Ensure all three environment variables are set:
 
 ### SSL Certificate Errors
 
-If you're using self-signed certificates, you may need to configure certificate verification. The client currently verifies SSL by default. For testing with self-signed certs, you could modify the client initialization in `server.py`.
+If you're using self-signed certificates, you can disable SSL verification by setting the `ICINGA2_VERIFY_SSL` environment variable to `false`:
 
-For production, use proper certificates from Let's Encrypt or your organization's CA.
+```bash
+ICINGA2_VERIFY_SSL=false
+```
+
+Or in your Claude Desktop config:
+
+```json
+{
+  "mcpServers": {
+    "icinga2": {
+      "env": {
+        "ICINGA2_API_URL": "https://your-icinga-host:5665",
+        "ICINGA2_API_USER": "mcp-user",
+        "ICINGA2_API_PASSWORD": "your-password",
+        "ICINGA2_VERIFY_SSL": "false"
+      }
+    }
+  }
+}
+```
+
+**⚠️ Security Warning**: Disabling SSL verification should only be used in development/testing environments. For production, use proper certificates from Let's Encrypt or your organization's CA.
 
 ### Permission Denied Errors
 

@@ -252,6 +252,8 @@ def get_icinga2_client() -> Icinga2Client:
       - ICINGA2_API_URL: API endpoint URL
       - ICINGA2_API_USER: API username
       - ICINGA2_API_PASSWORD: API password
+    - Optional:
+      - ICINGA2_VERIFY_SSL: Verify SSL certificates (default: true, set to "false" to disable)
     - Optional (for SSH tunnel):
       - ICINGA2_SSH_HOST: SSH server hostname/IP
       - ICINGA2_SSH_PORT: SSH server port (default: 22)
@@ -275,6 +277,16 @@ def get_icinga2_client() -> Icinga2Client:
         raise ValueError(
             "Missing required environment variables: "
             "ICINGA2_API_URL, ICINGA2_API_USER, ICINGA2_API_PASSWORD"
+        )
+
+    # SSL verification (default: True for security)
+    verify_ssl_str = os.getenv("ICINGA2_VERIFY_SSL", "true").lower()
+    verify_ssl = verify_ssl_str not in ("false", "0", "no", "off")
+
+    if not verify_ssl:
+        logger.warning(
+            "⚠️  SSL certificate verification is DISABLED. "
+            "This is insecure and should only be used in development/testing environments."
         )
 
     # Check if SSH tunnel is configured
@@ -319,7 +331,9 @@ def get_icinga2_client() -> Icinga2Client:
             f"{remote_host}:{remote_port}"
         )
 
-    return Icinga2Client(api_url, api_user, api_password, ssh_tunnel=ssh_tunnel)
+    return Icinga2Client(
+        api_url, api_user, api_password, verify_ssl=verify_ssl, ssh_tunnel=ssh_tunnel
+    )
 
 
 def build_state_filter(object_type: str, state: StateFilter) -> Optional[str]:

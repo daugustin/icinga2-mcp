@@ -25,6 +25,9 @@ Configure the server using environment variables:
 - `ICINGA2_API_USER`: API username
 - `ICINGA2_API_PASSWORD`: API password
 
+**Optional:**
+- `ICINGA2_VERIFY_SSL`: Verify SSL certificates (default: `true`, set to `false` for self-signed certs)
+
 **Optional (for SSH tunnel):**
 - `ICINGA2_SSH_HOST`: SSH server hostname/IP
 - `ICINGA2_SSH_PORT`: SSH server port (default: 22)
@@ -108,7 +111,10 @@ Most query tools support three detail levels:
 - Uses HTTPS with TLS 1.2+ (enforced by Icinga2)
 - HTTP Basic Authentication
 - Credentials stored in environment variables
-- Certificate verification enabled by default
+- Certificate verification enabled by default (can be disabled for self-signed certificates via `ICINGA2_VERIFY_SSL=false`)
+- SSH tunnel support for secure access to private networks
+
+**⚠️ Security Warning**: Disabling SSL verification (`ICINGA2_VERIFY_SSL=false`) should only be used in development/testing environments with self-signed certificates. Never disable SSL verification in production.
 
 ## Development
 
