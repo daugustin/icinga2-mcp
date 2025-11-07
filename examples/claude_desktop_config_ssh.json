@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "icinga2": {
+      "command": "python",
+      "args": ["-m", "icinga2_mcp"],
+      "env": {
+        "ICINGA2_API_URL": "https://icinga.example.com:5665",
+        "ICINGA2_API_USER": "mcp-user",
+        "ICINGA2_API_PASSWORD": "your-password-here",
+        "ICINGA2_SSH_HOST": "bastion.example.com",
+        "ICINGA2_SSH_USER": "ssh-user",
+        "ICINGA2_SSH_KEY_PATH": "/home/user/.ssh/id_rsa",
+        "ICINGA2_REMOTE_HOST": "localhost",
+        "ICINGA2_REMOTE_PORT": "5665"
+      }
+    }
+  }
+}

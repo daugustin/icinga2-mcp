@@ -11,6 +11,7 @@ from mcp.types import Tool, TextContent
 from pydantic import BaseModel, Field, field_validator
 
 from .client import Icinga2Client, Icinga2APIError
+from .tunnel import SSHTunnel
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +245,22 @@ def get_icinga2_client() -> Icinga2Client:
     """
     Create an Icinga2 client from environment variables.
 
+    Supports both direct API access and SSH tunneling.
+
+    Environment variables:
+    - Required:
+      - ICINGA2_API_URL: API endpoint URL
+      - ICINGA2_API_USER: API username
+      - ICINGA2_API_PASSWORD: API password
+    - Optional (for SSH tunnel):
+      - ICINGA2_SSH_HOST: SSH server hostname/IP
+      - ICINGA2_SSH_PORT: SSH server port (default: 22)
+      - ICINGA2_SSH_USER: SSH username
+      - ICINGA2_SSH_KEY_PATH: Path to SSH private key
+      - ICINGA2_SSH_PASSWORD: SSH password (if not using key)
+      - ICINGA2_REMOTE_HOST: Icinga2 host as seen from SSH server (default: localhost)
+      - ICINGA2_REMOTE_PORT: Icinga2 API port (default: 5665)
+
     Returns:
         Configured Icinga2Client instance
 
@@ -260,7 +277,49 @@ def get_icinga2_client() -> Icinga2Client:
             "ICINGA2_API_URL, ICINGA2_API_USER, ICINGA2_API_PASSWORD"
         )
 
-    return Icinga2Client(api_url, api_user, api_password)
+    # Check if SSH tunnel is configured
+    ssh_host = os.getenv("ICINGA2_SSH_HOST")
+    ssh_tunnel = None
+
+    if ssh_host:
+        logger.info("SSH tunnel configuration detected")
+
+        # Get SSH configuration
+        ssh_port = int(os.getenv("ICINGA2_SSH_PORT", "22"))
+        ssh_user = os.getenv("ICINGA2_SSH_USER")
+        ssh_key_path = os.getenv("ICINGA2_SSH_KEY_PATH")
+        ssh_password = os.getenv("ICINGA2_SSH_PASSWORD")
+        remote_host = os.getenv("ICINGA2_REMOTE_HOST", "localhost")
+        remote_port = int(os.getenv("ICINGA2_REMOTE_PORT", "5665"))
+
+        if not ssh_user:
+            raise ValueError(
+                "ICINGA2_SSH_USER is required when ICINGA2_SSH_HOST is set"
+            )
+
+        if not ssh_key_path and not ssh_password:
+            raise ValueError(
+                "Either ICINGA2_SSH_KEY_PATH or ICINGA2_SSH_PASSWORD is required for SSH authentication"
+            )
+
+        # Create SSH tunnel
+        ssh_tunnel = SSHTunnel(
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            ssh_user=ssh_user,
+            remote_host=remote_host,
+            remote_port=remote_port,
+            ssh_key_path=ssh_key_path,
+            ssh_password=ssh_password,
+            known_hosts=None,  # Accept any host key (for simplicity)
+        )
+
+        logger.info(
+            f"SSH tunnel configured: {ssh_user}@{ssh_host}:{ssh_port} -> "
+            f"{remote_host}:{remote_port}"
+        )
+
+    return Icinga2Client(api_url, api_user, api_password, ssh_tunnel=ssh_tunnel)
 
 
 def build_state_filter(object_type: str, state: StateFilter) -> Optional[str]:

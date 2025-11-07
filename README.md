@@ -8,6 +8,7 @@ A Model Context Protocol (MCP) server for interacting with Icinga2 monitoring sy
 - **Manage Downtimes**: Schedule maintenance windows for hosts and services
 - **Handle Alerts**: Acknowledge problems with customizable comments
 - **Flexible Detail Levels**: Control response verbosity to optimize context usage
+- **SSH Tunnel Support**: Access non-public Icinga2 APIs through SSH tunneling
 
 ## Installation
 
@@ -19,15 +20,27 @@ pip install -e .
 
 Configure the server using environment variables:
 
+**Required:**
 - `ICINGA2_API_URL`: Icinga2 API endpoint (e.g., `https://icinga.example.com:5665`)
 - `ICINGA2_API_USER`: API username
 - `ICINGA2_API_PASSWORD`: API password
+
+**Optional (for SSH tunnel):**
+- `ICINGA2_SSH_HOST`: SSH server hostname/IP
+- `ICINGA2_SSH_PORT`: SSH server port (default: 22)
+- `ICINGA2_SSH_USER`: SSH username
+- `ICINGA2_SSH_KEY_PATH`: Path to SSH private key
+- `ICINGA2_SSH_PASSWORD`: SSH password (if not using key)
+- `ICINGA2_REMOTE_HOST`: Icinga2 host as seen from SSH server (default: localhost)
+- `ICINGA2_REMOTE_PORT`: Icinga2 API port (default: 5665)
+
+See `.env.example` for a complete configuration template.
 
 ## Usage
 
 ### As MCP Server
 
-Add to your MCP client configuration:
+**Direct API Access:**
 
 ```json
 {
@@ -39,6 +52,29 @@ Add to your MCP client configuration:
         "ICINGA2_API_URL": "https://icinga.example.com:5665",
         "ICINGA2_API_USER": "mcp-user",
         "ICINGA2_API_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+**With SSH Tunnel (for non-public APIs):**
+
+```json
+{
+  "mcpServers": {
+    "icinga2": {
+      "command": "python",
+      "args": ["-m", "icinga2_mcp"],
+      "env": {
+        "ICINGA2_API_URL": "https://icinga.example.com:5665",
+        "ICINGA2_API_USER": "mcp-user",
+        "ICINGA2_API_PASSWORD": "your-password",
+        "ICINGA2_SSH_HOST": "bastion.example.com",
+        "ICINGA2_SSH_USER": "ssh-user",
+        "ICINGA2_SSH_KEY_PATH": "/home/user/.ssh/id_rsa",
+        "ICINGA2_REMOTE_HOST": "localhost",
+        "ICINGA2_REMOTE_PORT": "5665"
       }
     }
   }

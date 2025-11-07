@@ -98,12 +98,75 @@ Create a `.env` file (copy from `.env.example`):
 cp .env.example .env
 ```
 
+### Option A: Direct API Access
+
+If your Icinga2 API is publicly accessible, configure only the basic settings:
+
 Edit `.env` with your values:
 
 ```
 ICINGA2_API_URL=https://your-icinga-host:5665
 ICINGA2_API_USER=mcp-user
 ICINGA2_API_PASSWORD=your-secure-password
+```
+
+### Option B: SSH Tunnel Access
+
+If your Icinga2 API is not publicly accessible (behind a firewall or on a private network), you can use SSH tunneling:
+
+1. **Set up SSH access** to a server that can reach the Icinga2 API (bastion/jump host or the Icinga2 server itself)
+
+2. **Configure SSH authentication**:
+   - **Recommended**: Use SSH key-based authentication
+     ```bash
+     # Generate SSH key if you don't have one
+     ssh-keygen -t rsa -b 4096 -f ~/.ssh/icinga2_mcp
+
+     # Copy public key to the SSH server
+     ssh-copy-id -i ~/.ssh/icinga2_mcp.pub user@bastion.example.com
+     ```
+   - **Alternative**: Use password authentication (less secure)
+
+3. **Configure `.env` with SSH tunnel settings**:
+
+   ```
+   # Required: Icinga2 API credentials
+   ICINGA2_API_URL=https://icinga.example.com:5665
+   ICINGA2_API_USER=mcp-user
+   ICINGA2_API_PASSWORD=your-secure-password
+
+   # SSH Tunnel configuration
+   ICINGA2_SSH_HOST=bastion.example.com
+   ICINGA2_SSH_USER=your-ssh-user
+   ICINGA2_SSH_KEY_PATH=/home/user/.ssh/icinga2_mcp
+   ICINGA2_REMOTE_HOST=localhost
+   ICINGA2_REMOTE_PORT=5665
+   ```
+
+**Configuration Notes:**
+
+- `ICINGA2_SSH_HOST`: The SSH server you'll tunnel through (bastion host or Icinga2 server)
+- `ICINGA2_SSH_USER`: SSH username for the tunnel
+- `ICINGA2_SSH_KEY_PATH`: Path to your SSH private key
+- `ICINGA2_REMOTE_HOST`:
+  - Use `localhost` if Icinga2 is running on the SSH server
+  - Use internal IP/hostname if Icinga2 is on a different server accessible from SSH server
+- `ICINGA2_REMOTE_PORT`: Icinga2 API port (typically 5665)
+
+**Example Scenarios:**
+
+*Scenario 1: Icinga2 running on the SSH server*
+```
+ICINGA2_SSH_HOST=icinga.internal.example.com
+ICINGA2_REMOTE_HOST=localhost
+ICINGA2_REMOTE_PORT=5665
+```
+
+*Scenario 2: Icinga2 on a separate internal server*
+```
+ICINGA2_SSH_HOST=bastion.example.com
+ICINGA2_REMOTE_HOST=10.0.1.100
+ICINGA2_REMOTE_PORT=5665
 ```
 
 ## Step 4: Configure Claude Desktop (or your MCP client)
@@ -117,6 +180,7 @@ ICINGA2_API_PASSWORD=your-secure-password
 
 2. Add the Icinga2 MCP server configuration:
 
+**For Direct API Access:**
 ```json
 {
   "mcpServers": {
@@ -133,6 +197,28 @@ ICINGA2_API_PASSWORD=your-secure-password
 }
 ```
 
+**For SSH Tunnel Access:**
+```json
+{
+  "mcpServers": {
+    "icinga2": {
+      "command": "python",
+      "args": ["-m", "icinga2_mcp"],
+      "env": {
+        "ICINGA2_API_URL": "https://icinga.example.com:5665",
+        "ICINGA2_API_USER": "mcp-user",
+        "ICINGA2_API_PASSWORD": "your-secure-password",
+        "ICINGA2_SSH_HOST": "bastion.example.com",
+        "ICINGA2_SSH_USER": "ssh-user",
+        "ICINGA2_SSH_KEY_PATH": "/home/user/.ssh/icinga2_mcp",
+        "ICINGA2_REMOTE_HOST": "localhost",
+        "ICINGA2_REMOTE_PORT": "5665"
+      }
+    }
+  }
+}
+```
+
 3. Restart Claude Desktop
 
 ### For other MCP clients
@@ -140,7 +226,7 @@ ICINGA2_API_PASSWORD=your-secure-password
 Refer to your client's documentation for adding MCP servers. The basic requirements are:
 
 - Command: `python -m icinga2_mcp`
-- Environment variables: `ICINGA2_API_URL`, `ICINGA2_API_USER`, `ICINGA2_API_PASSWORD`
+- Environment variables: See configuration section above for required and optional variables
 
 ## Step 5: Test the Integration
 

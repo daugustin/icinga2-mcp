@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 
 import httpx
 
+from .tunnel import SSHTunnel
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,9 +21,17 @@ class Icinga2Client:
     Asynchronous client for Icinga2 REST API.
 
     Handles authentication, request/response formatting, and error handling.
+    Supports SSH tunneling for accessing non-public Icinga2 APIs.
     """
 
-    def __init__(self, base_url: str, username: str, password: str, verify_ssl: bool = True):
+    def __init__(
+        self,
+        base_url: str,
+        username: str,
+        password: str,
+        verify_ssl: bool = True,
+        ssh_tunnel: Optional[SSHTunnel] = None,
+    ):
         """
         Initialize Icinga2 API client.
 
@@ -30,14 +40,27 @@ class Icinga2Client:
             username: API username
             password: API password
             verify_ssl: Whether to verify SSL certificates
+            ssh_tunnel: Optional SSH tunnel instance for accessing non-public APIs
         """
         self.base_url = base_url.rstrip("/")
         self.auth = (username, password)
         self.verify_ssl = verify_ssl
+        self.ssh_tunnel = ssh_tunnel
         self.client: Optional[httpx.AsyncClient] = None
+        self._tunnel_managed = False
 
     async def __aenter__(self):
         """Async context manager entry."""
+        # If SSH tunnel is configured, establish it first
+        if self.ssh_tunnel and not self.ssh_tunnel.is_connected:
+            logger.info("Establishing SSH tunnel...")
+            await self.ssh_tunnel.connect()
+            self._tunnel_managed = True
+
+            # Use tunnel URL instead of original base_url
+            self.base_url = self.ssh_tunnel.get_tunnel_url(use_https=True)
+            logger.info(f"Using tunneled connection: {self.base_url}")
+
         self.client = httpx.AsyncClient(
             auth=self.auth,
             verify=self.verify_ssl,
@@ -50,6 +73,12 @@ class Icinga2Client:
         """Async context manager exit."""
         if self.client:
             await self.client.aclose()
+
+        # Close SSH tunnel if we established it
+        if self._tunnel_managed and self.ssh_tunnel:
+            logger.info("Closing SSH tunnel...")
+            await self.ssh_tunnel.close()
+            self._tunnel_managed = False
 
     async def _request(
         self, method: str, endpoint: str, json_data: Optional[Dict[str, Any]] = None
