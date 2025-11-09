@@ -4,7 +4,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent
@@ -131,11 +131,10 @@ class ScheduleDowntimeInput(BaseModel):
         ...,
         description="Type of object: host or service",
     )
-    host_name: str = Field(
+    host_name: Union[str, List[str]] = Field(
         ...,
-        description="Name of the host",
-        examples=["web01.example.com"],
-        min_length=1,
+        description="Name of the host(s). Can be a single host name or a list of host names for bulk operations.",
+        examples=["web01.example.com", ["web01.example.com", "web02.example.com", "web03.example.com"]],
     )
     service_name: Optional[str] = Field(
         None,
@@ -175,12 +174,34 @@ class ScheduleDowntimeInput(BaseModel):
         description="For hosts only: also schedule downtime for all services",
     )
 
+    @field_validator("host_name")
+    @classmethod
+    def validate_host_name(cls, v: Union[str, List[str]]) -> Union[str, List[str]]:
+        """Validate host_name and ensure list is not empty."""
+        if isinstance(v, list):
+            if len(v) == 0:
+                raise ValueError("host_name list cannot be empty")
+            if len(v) > 100:
+                raise ValueError("Cannot schedule downtime for more than 100 hosts at once")
+            for host in v:
+                if not host or not host.strip():
+                    raise ValueError("host_name list contains empty host name")
+        elif isinstance(v, str):
+            if not v or not v.strip():
+                raise ValueError("host_name cannot be empty")
+        return v
+
     @field_validator("service_name")
     @classmethod
     def validate_service_name(cls, v: Optional[str], info) -> Optional[str]:
         """Validate that service_name is provided when object_type is 'service'."""
         if info.data.get("object_type") == "service" and not v:
             raise ValueError("service_name is required when object_type is 'service'")
+        # For service type, only single host is supported
+        if info.data.get("object_type") == "service":
+            host_name = info.data.get("host_name")
+            if isinstance(host_name, list):
+                raise ValueError("Multiple hosts are not supported for service downtime. Use object_type='host' for bulk operations.")
         return v
 
 
@@ -584,9 +605,10 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="schedule_downtime",
             description=(
-                "Schedule maintenance downtime for a host or service to suppress alerts during "
+                "Schedule maintenance downtime for one or multiple hosts/services to suppress alerts during "
                 "planned maintenance windows. Supports both fixed and flexible downtimes. "
-                "Can optionally schedule downtime for all services on a host."
+                "Can optionally schedule downtime for all services on a host. "
+                "For bulk operations, provide a list of host names to schedule downtime for multiple hosts at once."
             ),
             inputSchema=ScheduleDowntimeInput.model_json_schema(),
         ),
@@ -811,37 +833,84 @@ async def handle_schedule_downtime(params: ScheduleDowntimeInput) -> list[TextCo
     start_time = datetime.now() + timedelta(minutes=params.start_in_minutes)
     end_time = start_time + timedelta(minutes=params.duration_minutes)
 
-    # Determine object type and name
+    # Normalize host_name to list for uniform processing
+    host_names = params.host_name if isinstance(params.host_name, list) else [params.host_name]
+
+    # Determine object type
     object_type = "Host" if params.object_type == "host" else "Service"
-    if params.object_type == "service":
-        object_name = f"{params.host_name}!{params.service_name}"
-    else:
-        object_name = params.host_name
+
+    # Track results
+    successful_hosts = []
+    failed_hosts = []
 
     async with client:
-        try:
-            result = await client.schedule_downtime(
-                object_type=object_type,
-                object_name=object_name,
-                author=params.author,
-                comment=params.comment,
-                start_time=start_time,
-                end_time=end_time,
-                duration=params.duration_minutes * 60 if not params.fixed else None,
-                fixed=params.fixed,
-                all_services=params.all_services if params.object_type == "host" else False,
-            )
-
-            # Format success message
-            target = f"{params.object_type} '{params.host_name}"
+        # Schedule downtime for each host
+        for host_name in host_names:
             if params.object_type == "service":
-                target += f"!{params.service_name}"
-            target += "'"
+                object_name = f"{host_name}!{params.service_name}"
+            else:
+                object_name = host_name
 
+            try:
+                result = await client.schedule_downtime(
+                    object_type=object_type,
+                    object_name=object_name,
+                    author=params.author,
+                    comment=params.comment,
+                    start_time=start_time,
+                    end_time=end_time,
+                    duration=params.duration_minutes * 60 if not params.fixed else None,
+                    fixed=params.fixed,
+                    all_services=params.all_services if params.object_type == "host" else False,
+                )
+                successful_hosts.append(host_name)
+            except Icinga2APIError as e:
+                failed_hosts.append((host_name, str(e)))
+
+        # Format output based on results
+        if len(host_names) == 1:
+            # Single host - original format
+            if successful_hosts:
+                target = f"{params.object_type} '{host_names[0]}"
+                if params.object_type == "service":
+                    target += f"!{params.service_name}"
+                target += "'"
+
+                output = [
+                    f"✅ Downtime scheduled successfully for {target}",
+                    f"",
+                    f"**Details:**",
+                    f"- Start: {start_time.strftime('%Y-%m-%d %H:%M:%S')}",
+                    f"- End: {end_time.strftime('%Y-%m-%d %H:%M:%S')}",
+                    f"- Duration: {params.duration_minutes} minutes",
+                    f"- Type: {'Fixed' if params.fixed else 'Flexible'}",
+                    f"- Author: {params.author}",
+                    f"- Comment: {params.comment}",
+                ]
+
+                if params.all_services:
+                    output.append(f"- All services: Yes")
+
+                return [TextContent(type="text", text="\n".join(output))]
+            else:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"❌ Failed to schedule downtime for {host_names[0]}: {failed_hosts[0][1]}\n\n"
+                        "Please verify the host/service name and try again.",
+                    )
+                ]
+        else:
+            # Multiple hosts - summary format
             output = [
-                f"✅ Downtime scheduled successfully for {target}",
+                f"# Bulk Downtime Scheduling Results",
                 f"",
-                f"**Details:**",
+                f"**Summary:**",
+                f"- Total hosts: {len(host_names)}",
+                f"- Successful: {len(successful_hosts)}",
+                f"- Failed: {len(failed_hosts)}",
+                f"",
+                f"**Downtime Details:**",
                 f"- Start: {start_time.strftime('%Y-%m-%d %H:%M:%S')}",
                 f"- End: {end_time.strftime('%Y-%m-%d %H:%M:%S')}",
                 f"- Duration: {params.duration_minutes} minutes",
@@ -853,16 +922,19 @@ async def handle_schedule_downtime(params: ScheduleDowntimeInput) -> list[TextCo
             if params.all_services:
                 output.append(f"- All services: Yes")
 
-            return [TextContent(type="text", text="\n".join(output))]
+            if successful_hosts:
+                output.append(f"")
+                output.append(f"**✅ Successful ({len(successful_hosts)}):**")
+                for host in successful_hosts:
+                    output.append(f"  - {host}")
 
-        except Icinga2APIError as e:
-            return [
-                TextContent(
-                    type="text",
-                    text=f"❌ Failed to schedule downtime: {str(e)}\n\n"
-                    "Please verify the host/service name and try again.",
-                )
-            ]
+            if failed_hosts:
+                output.append(f"")
+                output.append(f"**❌ Failed ({len(failed_hosts)}):**")
+                for host, error in failed_hosts:
+                    output.append(f"  - {host}: {error}")
+
+            return [TextContent(type="text", text="\n".join(output))]
 
 
 async def handle_acknowledge_problem(params: AcknowledgeProblemInput) -> list[TextContent]:
