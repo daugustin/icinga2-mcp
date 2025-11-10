@@ -257,6 +257,53 @@ class AcknowledgeProblemInput(BaseModel):
         return v
 
 
+class RescheduleCheckInput(BaseModel):
+    """Input for rescheduling checks."""
+
+    object_type: Literal["host", "service"] = Field(
+        ...,
+        description="Type of object: host or service",
+    )
+    filter_type: Literal["name", "state", "pattern"] = Field(
+        ...,
+        description="Type of filter to apply: name (specific host/service), state (by check state), or pattern (wildcard match)",
+    )
+    filter_value: str = Field(
+        ...,
+        description=(
+            "Filter value based on filter_type:\n"
+            "- For 'name': exact host name (e.g., 'web01.example.com') or service name (e.g., 'web01.example.com!HTTP')\n"
+            "- For 'state': state name (up/down for hosts, ok/warning/critical/unknown for services, or 'problem' for any non-OK state)\n"
+            "- For 'pattern': wildcard pattern (e.g., 'web*' for hosts starting with 'web', '*disk*' for services containing 'disk')"
+        ),
+        examples=["web01.example.com", "critical", "web*", "*disk*"],
+        min_length=1,
+    )
+    force: bool = Field(
+        True,
+        description="Force check execution regardless of time period restrictions",
+    )
+
+    @field_validator("filter_value")
+    @classmethod
+    def validate_filter_value(cls, v: str, info) -> str:
+        """Validate filter_value based on filter_type."""
+        filter_type = info.data.get("filter_type")
+        object_type = info.data.get("object_type")
+
+        if filter_type == "state":
+            if object_type == "host":
+                valid_states = ["up", "down", "problem"]
+                if v.lower() not in valid_states:
+                    raise ValueError(f"For host state filter, value must be one of: {', '.join(valid_states)}")
+            else:  # service
+                valid_states = ["ok", "warning", "critical", "unknown", "problem"]
+                if v.lower() not in valid_states:
+                    raise ValueError(f"For service state filter, value must be one of: {', '.join(valid_states)}")
+
+        return v
+
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -621,6 +668,16 @@ async def list_tools() -> list[Tool]:
             ),
             inputSchema=AcknowledgeProblemInput.model_json_schema(),
         ),
+        Tool(
+            name="reschedule_check",
+            description=(
+                "Reschedule check execution for hosts or services to run immediately (ASAP). "
+                "Supports flexible filtering: by exact name, by state (e.g., all critical services), "
+                "or by wildcard pattern (e.g., all hosts matching 'web*'). "
+                "Useful for forcing immediate checks after fixing issues or for bulk check rescheduling."
+            ),
+            inputSchema=RescheduleCheckInput.model_json_schema(),
+        ),
     ]
 
 
@@ -640,6 +697,8 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return await handle_schedule_downtime(ScheduleDowntimeInput(**arguments))
         elif name == "acknowledge_problem":
             return await handle_acknowledge_problem(AcknowledgeProblemInput(**arguments))
+        elif name == "reschedule_check":
+            return await handle_reschedule_check(RescheduleCheckInput(**arguments))
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
@@ -985,5 +1044,92 @@ async def handle_acknowledge_problem(params: AcknowledgeProblemInput) -> list[Te
                     type="text",
                     text=f"❌ Failed to acknowledge problem: {str(e)}\n\n"
                     "Please verify the host/service name and that there is an active problem.",
+                )
+            ]
+
+
+async def handle_reschedule_check(params: RescheduleCheckInput) -> list[TextContent]:
+    """Handle reschedule_check tool call."""
+    client = get_icinga2_client()
+
+    # Determine object type
+    object_type = "Host" if params.object_type == "host" else "Service"
+
+    # Build filter expression based on filter_type
+    if params.filter_type == "name":
+        # Exact name match
+        if params.object_type == "host":
+            filter_expr = f'host.name=="{params.filter_value}"'
+        else:  # service
+            filter_expr = f'service.name=="{params.filter_value}"'
+    elif params.filter_type == "state":
+        # State-based filter
+        state_value = params.filter_value.lower()
+        if params.object_type == "host":
+            state_map = {
+                "up": "host.state == 0",
+                "down": "host.state == 1",
+                "problem": "host.state != 0",
+            }
+            filter_expr = state_map[state_value]
+        else:  # service
+            state_map = {
+                "ok": "service.state == 0",
+                "warning": "service.state == 1",
+                "critical": "service.state == 2",
+                "unknown": "service.state == 3",
+                "problem": "service.state != 0",
+            }
+            filter_expr = state_map[state_value]
+    else:  # pattern
+        # Wildcard pattern match
+        if params.object_type == "host":
+            filter_expr = f'match("{params.filter_value}", host.name)'
+        else:  # service
+            filter_expr = f'match("{params.filter_value}", service.name)'
+
+    async with client:
+        try:
+            result = await client.reschedule_check(
+                object_type=object_type,
+                filter_expr=filter_expr,
+                next_check=None,  # Always schedule ASAP
+                force=params.force,
+            )
+
+            # Parse result to count affected objects
+            status = result.get("results", [])
+            affected_count = len([s for s in status if s.get("code") == 200])
+
+            # Format success message
+            filter_desc = {
+                "name": f"name '{params.filter_value}'",
+                "state": f"state '{params.filter_value}'",
+                "pattern": f"pattern '{params.filter_value}'",
+            }[params.filter_type]
+
+            output = [
+                f"✅ Check(s) rescheduled successfully",
+                f"",
+                f"**Details:**",
+                f"- Object type: {params.object_type}",
+                f"- Filter: {filter_desc}",
+                f"- Affected objects: {affected_count}",
+                f"- Schedule: Immediately (ASAP)",
+                f"- Force: {params.force}",
+            ]
+
+            if affected_count == 0:
+                output.append("")
+                output.append("⚠️ Note: No objects matched the filter criteria.")
+
+            return [TextContent(type="text", text="\n".join(output))]
+
+        except Icinga2APIError as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Failed to reschedule check(s): {str(e)}\n\n"
+                    "Please verify the filter criteria and try again.",
                 )
             ]

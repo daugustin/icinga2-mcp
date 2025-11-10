@@ -261,3 +261,34 @@ class Icinga2Client:
         return await self.perform_action(
             "schedule-downtime", object_type, filter_expr, params
         )
+
+    async def reschedule_check(
+        self,
+        object_type: str,
+        filter_expr: str,
+        next_check: Optional[datetime] = None,
+        force: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Reschedule check(s) for hosts or services matching a filter.
+
+        Args:
+            object_type: "Host" or "Service"
+            filter_expr: Filter expression to select objects
+            next_check: When to schedule the next check (None = now)
+            force: Force check execution regardless of time period restrictions
+
+        Returns:
+            Reschedule result
+        """
+        # Use current time if not specified (schedule ASAP)
+        check_time = next_check if next_check else datetime.now()
+
+        params = {
+            "next_check": int(check_time.timestamp()),
+            "force": force,
+        }
+
+        return await self.perform_action(
+            "reschedule-check", object_type, filter_expr, params
+        )
