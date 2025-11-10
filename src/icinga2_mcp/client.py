@@ -292,3 +292,92 @@ class Icinga2Client:
         return await self.perform_action(
             "reschedule-check", object_type, filter_expr, params
         )
+
+    async def query_recent_events(
+        self,
+        object_types: List[str],
+        event_types: List[str],
+        minutes_ago: int = 60,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        Query recent events by looking at object state changes and check results.
+
+        Args:
+            object_types: List of object types to query ("Host", "Service")
+            event_types: List of event types ("state_change", "problem", "recovery", "all")
+            minutes_ago: How many minutes back to look
+            limit: Maximum number of events to return
+
+        Returns:
+            List of event dictionaries with normalized format
+        """
+        events = []
+        cutoff_time = datetime.now() - timedelta(minutes=minutes_ago)
+        cutoff_timestamp = int(cutoff_time.timestamp())
+
+        for obj_type in object_types:
+            # Build filter based on event types
+            filters = []
+
+            if "state_change" in event_types or "all" in event_types:
+                # Objects that had recent state changes
+                filters.append(f"{obj_type.lower()}.last_state_change > {cutoff_timestamp}")
+
+            if "problem" in event_types or "all" in event_types:
+                # Objects currently in problem state
+                if obj_type == "Host":
+                    filters.append(f"{obj_type.lower()}.state != 0")
+                else:
+                    filters.append(f"{obj_type.lower()}.state != 0")
+
+            # Combine filters with OR
+            if filters:
+                filter_expr = " || ".join([f"({f})" for f in filters])
+            else:
+                filter_expr = None
+
+            # Query objects
+            attrs = [
+                "name", "display_name", "state", "last_state_change",
+                "last_check_result", "acknowledgement", "downtime_depth",
+                "last_state_type", "last_hard_state_change"
+            ]
+
+            results = await self.query_objects(obj_type, filters=filter_expr, attrs=attrs)
+
+            # Convert to event format
+            for result in results[:limit]:
+                attrs_data = result.get("attrs", {})
+
+                # Determine event type
+                state = attrs_data.get("state", 0)
+                last_state_change = attrs_data.get("last_state_change", 0)
+
+                if obj_type == "Host":
+                    state_str = "UP" if state == 0 else "DOWN"
+                    is_problem = state != 0
+                else:
+                    state_map = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"}
+                    state_str = state_map.get(state, "UNKNOWN")
+                    is_problem = state != 0
+
+                event = {
+                    "type": obj_type.lower(),
+                    "name": attrs_data.get("name"),
+                    "display_name": attrs_data.get("display_name"),
+                    "state": state_str,
+                    "is_problem": is_problem,
+                    "timestamp": last_state_change,
+                    "last_check": attrs_data.get("last_check_result", {}).get("execution_end", 0),
+                    "output": attrs_data.get("last_check_result", {}).get("output", ""),
+                    "acknowledged": attrs_data.get("acknowledgement", 0) != 0,
+                    "in_downtime": attrs_data.get("downtime_depth", 0) > 0,
+                }
+
+                events.append(event)
+
+        # Sort by timestamp (most recent first)
+        events.sort(key=lambda x: x["timestamp"], reverse=True)
+
+        return events[:limit]

@@ -304,6 +304,36 @@ class RescheduleCheckInput(BaseModel):
         return v
 
 
+class QueryEventsInput(BaseModel):
+    """Input for querying recent events."""
+
+    object_type: Literal["host", "service", "both"] = Field(
+        "both",
+        description="Type of objects to query: host, service, or both",
+    )
+    event_type: Literal["state_change", "problem", "all"] = Field(
+        "all",
+        description=(
+            "Type of events to query:\n"
+            "- state_change: Objects that changed state recently\n"
+            "- problem: Objects currently in problem state\n"
+            "- all: All recent activity (state changes and problems)"
+        ),
+    )
+    time_range_minutes: int = Field(
+        60,
+        ge=1,
+        le=1440,  # Max 24 hours
+        description="How many minutes back to look for events",
+    )
+    limit: int = Field(
+        50,
+        ge=1,
+        le=500,
+        description="Maximum number of events to return",
+    )
+
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -678,6 +708,17 @@ async def list_tools() -> list[Tool]:
             ),
             inputSchema=RescheduleCheckInput.model_json_schema(),
         ),
+        Tool(
+            name="query_events",
+            description=(
+                "Query recent monitoring events to see what has been happening in your infrastructure. "
+                "Shows recent state changes, current problems, and other monitoring activity. "
+                "Supports filtering by time range (up to 24 hours), object type (hosts, services, or both), "
+                "and event type (state changes, problems, or all activity). "
+                "Useful for getting an overview of recent issues and system activity."
+            ),
+            inputSchema=QueryEventsInput.model_json_schema(),
+        ),
     ]
 
 
@@ -699,6 +740,8 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return await handle_acknowledge_problem(AcknowledgeProblemInput(**arguments))
         elif name == "reschedule_check":
             return await handle_reschedule_check(RescheduleCheckInput(**arguments))
+        elif name == "query_events":
+            return await handle_query_events(QueryEventsInput(**arguments))
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
@@ -1131,5 +1174,128 @@ async def handle_reschedule_check(params: RescheduleCheckInput) -> list[TextCont
                     type="text",
                     text=f"❌ Failed to reschedule check(s): {str(e)}\n\n"
                     "Please verify the filter criteria and try again.",
+                )
+            ]
+
+
+async def handle_query_events(params: QueryEventsInput) -> list[TextContent]:
+    """Handle query_events tool call."""
+    client = get_icinga2_client()
+
+    # Determine which object types to query
+    if params.object_type == "both":
+        object_types = ["Host", "Service"]
+    elif params.object_type == "host":
+        object_types = ["Host"]
+    else:
+        object_types = ["Service"]
+
+    # Determine event types to query
+    event_types = [params.event_type]
+
+    async with client:
+        try:
+            events = await client.query_recent_events(
+                object_types=object_types,
+                event_types=event_types,
+                minutes_ago=params.time_range_minutes,
+                limit=params.limit,
+            )
+
+            if not events:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"No events found in the last {params.time_range_minutes} minutes.",
+                    )
+                ]
+
+            # Format output
+            output = [
+                f"# Recent Events ({len(events)} found)",
+                f"",
+                f"**Time range:** Last {params.time_range_minutes} minutes",
+                f"**Event type:** {params.event_type}",
+                f"**Object type:** {params.object_type}",
+                f"",
+            ]
+
+            # Group events by type
+            host_events = [e for e in events if e["type"] == "host"]
+            service_events = [e for e in events if e["type"] == "service"]
+
+            if host_events:
+                output.append("## Host Events")
+                output.append("")
+                for event in host_events:
+                    timestamp_str = datetime.fromtimestamp(event["timestamp"]).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                    flags = []
+                    if event["acknowledged"]:
+                        flags.append("ACK")
+                    if event["in_downtime"]:
+                        flags.append("DT")
+
+                    flag_str = f" [{', '.join(flags)}]" if flags else ""
+
+                    icon = "🔴" if event["is_problem"] else "🟢"
+                    output.append(
+                        f"{icon} **{event['display_name']}** - {event['state']}{flag_str}"
+                    )
+                    output.append(f"   Time: {timestamp_str}")
+                    if event["output"]:
+                        # Truncate long output
+                        output_text = event["output"][:150]
+                        if len(event["output"]) > 150:
+                            output_text += "..."
+                        output.append(f"   Output: {output_text}")
+                    output.append("")
+
+            if service_events:
+                output.append("## Service Events")
+                output.append("")
+                for event in service_events:
+                    timestamp_str = datetime.fromtimestamp(event["timestamp"]).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                    flags = []
+                    if event["acknowledged"]:
+                        flags.append("ACK")
+                    if event["in_downtime"]:
+                        flags.append("DT")
+
+                    flag_str = f" [{', '.join(flags)}]" if flags else ""
+
+                    # Icon based on state
+                    state_icons = {
+                        "OK": "🟢",
+                        "WARNING": "🟡",
+                        "CRITICAL": "🔴",
+                        "UNKNOWN": "⚪",
+                    }
+                    icon = state_icons.get(event["state"], "⚪")
+
+                    output.append(
+                        f"{icon} **{event['display_name']}** - {event['state']}{flag_str}"
+                    )
+                    output.append(f"   Name: {event['name']}")
+                    output.append(f"   Time: {timestamp_str}")
+                    if event["output"]:
+                        # Truncate long output
+                        output_text = event["output"][:150]
+                        if len(event["output"]) > 150:
+                            output_text += "..."
+                        output.append(f"   Output: {output_text}")
+                    output.append("")
+
+            return [TextContent(type="text", text="\n".join(output))]
+
+        except Icinga2APIError as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Failed to query events: {str(e)}\n\n"
+                    "Please check your configuration and try again.",
                 )
             ]
