@@ -389,6 +389,89 @@ class RemoveDowntimeInput(BaseModel):
         return v
 
 
+class SubmitPassiveCheckInput(BaseModel):
+    """Input for submitting passive check results."""
+
+    check_type: Literal["host", "service"] = Field(
+        ...,
+        description="Type of check to submit: 'host' for host checks, 'service' for service checks",
+    )
+    target: str = Field(
+        ...,
+        description=(
+            "Target object to submit check for:\n"
+            "- For host checks: host name (e.g., 'web01.example.com')\n"
+            "- For service checks: service name in format 'hostname!servicename' "
+            "(e.g., 'web01.example.com!HTTP')"
+        ),
+        examples=["web01.example.com", "web01.example.com!HTTP"],
+    )
+    status: Literal["ok", "warning", "critical", "unknown", "up", "down"] = Field(
+        ...,
+        description=(
+            "Check result status:\n"
+            "- For service checks: ok, warning, critical, unknown\n"
+            "- For host checks: up, down"
+        ),
+    )
+    output: str = Field(
+        ...,
+        description="Check output message describing the status",
+        min_length=1,
+        examples=[
+            "HTTP OK - Response time: 0.123s",
+            "CRITICAL - Disk usage at 95%",
+            "Host is responding to ICMP pings",
+        ],
+    )
+    performance_data: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Optional performance metrics in Nagios plugin format.\n"
+            "Format: 'label=value[UOM];[warn];[crit];[min];[max]'\n"
+            "Examples: ['time=0.123s', 'size=1024KB;800;900;0;1000']"
+        ),
+        examples=[["time=0.123s", "size=1024KB;800;900"]],
+    )
+    check_source: Optional[str] = Field(
+        None,
+        description="Optional identifier for the source submitting the check (e.g., 'monitoring-script')",
+        examples=["external-monitor", "backup-script"],
+    )
+
+    @field_validator("status")
+    @classmethod
+    def validate_status_for_type(cls, v: str, info) -> str:
+        """Validate that status is appropriate for check type."""
+        check_type = info.data.get("check_type")
+        service_statuses = ["ok", "warning", "critical", "unknown"]
+        host_statuses = ["up", "down"]
+
+        if check_type == "service" and v not in service_statuses:
+            raise ValueError(
+                f"For service checks, status must be one of: {', '.join(service_statuses)}"
+            )
+        elif check_type == "host" and v not in host_statuses:
+            raise ValueError(f"For host checks, status must be one of: {', '.join(host_statuses)}")
+
+        return v
+
+    @field_validator("target")
+    @classmethod
+    def validate_target_format(cls, v: str, info) -> str:
+        """Validate target format matches check type."""
+        check_type = info.data.get("check_type")
+
+        if check_type == "service" and "!" not in v:
+            raise ValueError(
+                "For service checks, target must be in format 'hostname!servicename'"
+            )
+        elif check_type == "host" and "!" in v:
+            raise ValueError("For host checks, target must be just the hostname (no '!' separator)")
+
+        return v
+
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -794,6 +877,17 @@ async def list_tools() -> list[Tool]:
             ),
             inputSchema=RemoveDowntimeInput.model_json_schema(),
         ),
+        Tool(
+            name="submit_passive_check",
+            description=(
+                "Submit passive check results for hosts or services that don't perform active checks. "
+                "Use this to report status from external monitoring systems, scripts, or manual checks. "
+                "Supports both host checks (up/down) and service checks (ok/warning/critical/unknown). "
+                "Can include performance data and custom check source. "
+                "Useful for integrating external monitoring data into Icinga2."
+            ),
+            inputSchema=SubmitPassiveCheckInput.model_json_schema(),
+        ),
     ]
 
 
@@ -821,6 +915,8 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return await handle_list_downtimes(ListDowntimesInput(**arguments))
         elif name == "remove_downtime":
             return await handle_remove_downtime(RemoveDowntimeInput(**arguments))
+        elif name == "submit_passive_check":
+            return await handle_submit_passive_check(SubmitPassiveCheckInput(**arguments))
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
@@ -1567,5 +1663,109 @@ async def handle_remove_downtime(params: RemoveDowntimeInput) -> list[TextConten
                     type="text",
                     text=f"❌ Failed to remove downtime(s): {str(e)}\n\n"
                     "Please verify the filter criteria and try again.",
+                )
+            ]
+
+
+async def handle_submit_passive_check(
+    params: SubmitPassiveCheckInput,
+) -> list[TextContent]:
+    """Handle submit_passive_check tool call."""
+    client = get_icinga2_client()
+
+    # Map user-friendly status to Icinga2 exit codes
+    status_map = {
+        # Service statuses
+        "ok": 0,
+        "warning": 1,
+        "critical": 2,
+        "unknown": 3,
+        # Host statuses
+        "up": 0,
+        "down": 1,
+    }
+
+    exit_status = status_map[params.status]
+
+    # Determine object type and build filter
+    if params.check_type == "host":
+        object_type = "Host"
+        filter_expr = f'host.name=="{params.target}"'
+        target_display = params.target
+    else:  # service
+        # Parse hostname!servicename
+        host, service = params.target.split("!", 1)
+        object_type = "Service"
+        filter_expr = f'host.name=="{host}" && service.name=="{service}"'
+        target_display = params.target
+
+    async with client:
+        try:
+            result = await client.submit_passive_check(
+                object_type=object_type,
+                filter_expr=filter_expr,
+                exit_status=exit_status,
+                plugin_output=params.output,
+                performance_data=params.performance_data,
+                check_source=params.check_source,
+            )
+
+            # Check submission status
+            status_results = result.get("results", [])
+            success_count = len([s for s in status_results if s.get("code") == 200])
+
+            if success_count == 0:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"❌ Failed to submit passive check result\n\n"
+                        f"**Target:** {target_display}\n"
+                        f"**Type:** {params.check_type}\n\n"
+                        "The target object may not exist or may not accept passive checks.\n"
+                        "Please verify the target exists and is configured for passive checks.",
+                    )
+                ]
+
+            # Map exit status back to readable status for display
+            status_display = params.status.upper()
+            status_emoji = {
+                "ok": "✅",
+                "up": "✅",
+                "warning": "⚠️",
+                "critical": "🔴",
+                "unknown": "❓",
+                "down": "🔴",
+            }.get(params.status, "ℹ️")
+
+            output = [
+                f"{status_emoji} Passive check result submitted successfully",
+                f"",
+                f"**Target:** {target_display}",
+                f"**Type:** {params.check_type.title()}",
+                f"**Status:** {status_display}",
+                f"**Output:** {params.output}",
+            ]
+
+            if params.performance_data:
+                output.append(f"**Performance data:** {', '.join(params.performance_data)}")
+
+            if params.check_source:
+                output.append(f"**Check source:** {params.check_source}")
+
+            output.extend(
+                [
+                    "",
+                    "The check result has been processed and will appear in Icinga2.",
+                ]
+            )
+
+            return [TextContent(type="text", text="\n".join(output))]
+
+        except Icinga2APIError as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Failed to submit passive check result: {str(e)}\n\n"
+                    "Please verify the target exists and is configured for passive checks.",
                 )
             ]

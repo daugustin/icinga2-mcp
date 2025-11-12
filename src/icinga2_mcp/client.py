@@ -411,3 +411,48 @@ class Icinga2Client:
         }
 
         return await self._request("POST", "/actions/remove-downtime", payload)
+
+    async def submit_passive_check(
+        self,
+        object_type: str,
+        filter_expr: str,
+        exit_status: int,
+        plugin_output: str,
+        performance_data: Optional[List[str]] = None,
+        check_source: Optional[str] = None,
+        ttl: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Submit a passive check result for hosts or services.
+
+        Args:
+            object_type: "Host" or "Service"
+            filter_expr: Filter to select the target object(s)
+            exit_status: Check result status code:
+                - For services: 0=OK, 1=WARNING, 2=CRITICAL, 3=UNKNOWN
+                - For hosts: 0=UP, 1=DOWN
+            plugin_output: Check output text (status message)
+            performance_data: Optional performance data metrics
+            check_source: Optional check source identifier
+            ttl: Optional time-to-live in seconds
+
+        Returns:
+            Submission result
+        """
+        payload = {
+            "type": object_type,
+            "filter": filter_expr,
+            "exit_status": exit_status,
+            "plugin_output": plugin_output,
+        }
+
+        if performance_data:
+            payload["performance_data"] = performance_data
+
+        if check_source:
+            payload["check_source"] = check_source
+
+        if ttl is not None:
+            payload["ttl"] = ttl
+
+        return await self._request("POST", "/actions/process-check-result", payload)
