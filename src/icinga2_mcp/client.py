@@ -381,3 +381,33 @@ class Icinga2Client:
         events.sort(key=lambda x: x["timestamp"], reverse=True)
 
         return events[:limit]
+
+    async def remove_downtime(
+        self,
+        downtime_name: Optional[str] = None,
+        filter_expr: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Remove/cancel scheduled downtime(s).
+
+        Args:
+            downtime_name: Specific downtime name to remove
+            filter_expr: Filter expression to select multiple downtimes
+
+        Returns:
+            Removal result
+
+        Note:
+            Either downtime_name or filter_expr must be provided
+        """
+        if downtime_name:
+            filter_expr = f'downtime.name=="{downtime_name}"'
+        elif not filter_expr:
+            raise ValueError("Either downtime_name or filter_expr must be provided")
+
+        payload = {
+            "type": "Downtime",
+            "filter": filter_expr,
+        }
+
+        return await self._request("POST", "/actions/remove-downtime", payload)

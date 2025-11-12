@@ -334,6 +334,61 @@ class QueryEventsInput(BaseModel):
     )
 
 
+class ListDowntimesInput(BaseModel):
+    """Input for listing downtimes."""
+
+    filter_type: Literal["all", "active", "host", "service"] = Field(
+        "all",
+        description=(
+            "Type of downtimes to list:\n"
+            "- all: All scheduled downtimes\n"
+            "- active: Only currently active downtimes\n"
+            "- host: Only host downtimes\n"
+            "- service: Only service downtimes"
+        ),
+    )
+    host_filter: Optional[str] = Field(
+        None,
+        description="Optional filter to match host names (e.g., 'web01' or 'web*')",
+        examples=["web01", "web*"],
+    )
+
+
+class RemoveDowntimeInput(BaseModel):
+    """Input for removing downtimes."""
+
+    filter_type: Literal["name", "host", "service", "all_host", "all_service"] = Field(
+        ...,
+        description=(
+            "How to select downtimes to remove:\n"
+            "- name: Remove specific downtime by name\n"
+            "- host: Remove all downtimes for a specific host\n"
+            "- service: Remove all downtimes for a specific service\n"
+            "- all_host: Remove all host downtimes\n"
+            "- all_service: Remove all service downtimes"
+        ),
+    )
+    filter_value: Optional[str] = Field(
+        None,
+        description=(
+            "Value for the filter (required for 'name', 'host', 'service'):\n"
+            "- For 'name': exact downtime name\n"
+            "- For 'host': host name\n"
+            "- For 'service': service name (format: hostname!servicename)"
+        ),
+        examples=["web01.example.com", "web01.example.com!HTTP"],
+    )
+
+    @field_validator("filter_value")
+    @classmethod
+    def validate_filter_value(cls, v: Optional[str], info) -> Optional[str]:
+        """Validate that filter_value is provided when required."""
+        filter_type = info.data.get("filter_type")
+        if filter_type in ["name", "host", "service"] and not v:
+            raise ValueError(f"filter_value is required when filter_type is '{filter_type}'")
+        return v
+
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -719,6 +774,26 @@ async def list_tools() -> list[Tool]:
             ),
             inputSchema=QueryEventsInput.model_json_schema(),
         ),
+        Tool(
+            name="list_downtimes",
+            description=(
+                "List all scheduled and active maintenance downtimes. "
+                "Filter by type (all, active, host, service) and optionally by host name. "
+                "Shows downtime details including start/end times, author, and comments. "
+                "Useful for reviewing scheduled maintenance windows and checking what's currently in downtime."
+            ),
+            inputSchema=ListDowntimesInput.model_json_schema(),
+        ),
+        Tool(
+            name="remove_downtime",
+            description=(
+                "Cancel/remove scheduled maintenance downtimes. "
+                "Supports removing by downtime name, by host/service, or bulk removal. "
+                "Use this to cancel maintenance windows that are no longer needed. "
+                "Can remove specific downtimes or all downtimes for a host/service."
+            ),
+            inputSchema=RemoveDowntimeInput.model_json_schema(),
+        ),
     ]
 
 
@@ -742,6 +817,10 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return await handle_reschedule_check(RescheduleCheckInput(**arguments))
         elif name == "query_events":
             return await handle_query_events(QueryEventsInput(**arguments))
+        elif name == "list_downtimes":
+            return await handle_list_downtimes(ListDowntimesInput(**arguments))
+        elif name == "remove_downtime":
+            return await handle_remove_downtime(RemoveDowntimeInput(**arguments))
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
@@ -1297,5 +1376,196 @@ async def handle_query_events(params: QueryEventsInput) -> list[TextContent]:
                     type="text",
                     text=f"❌ Failed to query events: {str(e)}\n\n"
                     "Please check your configuration and try again.",
+                )
+            ]
+
+
+async def handle_list_downtimes(params: ListDowntimesInput) -> list[TextContent]:
+    """Handle list_downtimes tool call."""
+    client = get_icinga2_client()
+
+    async with client:
+        try:
+            # Build filter expression
+            filters = []
+
+            if params.filter_type == "active":
+                # Active downtimes (start_time <= now < end_time)
+                now = int(datetime.now().timestamp())
+                filters.append(f"downtime.start_time <= {now} && downtime.end_time > {now}")
+            elif params.filter_type == "host":
+                filters.append("downtime.service_name == \"\"")
+            elif params.filter_type == "service":
+                filters.append("downtime.service_name != \"\"")
+
+            # Add host name filter if provided
+            if params.host_filter:
+                if "*" in params.host_filter:
+                    filters.append(f'match("{params.host_filter}", downtime.host_name)')
+                else:
+                    filters.append(f'downtime.host_name == "{params.host_filter}"')
+
+            filter_expr = " && ".join(filters) if filters else None
+
+            # Query downtimes
+            downtimes = await client.query_objects("Downtime", filters=filter_expr)
+
+            if not downtimes:
+                return [
+                    TextContent(
+                        type="text",
+                        text="No downtimes found matching the criteria.",
+                    )
+                ]
+
+            # Format output
+            output = [
+                f"# Scheduled Downtimes ({len(downtimes)} found)",
+                f"",
+                f"**Filter:** {params.filter_type}",
+            ]
+
+            if params.host_filter:
+                output.append(f"**Host filter:** {params.host_filter}")
+
+            output.append("")
+
+            # Group by host and service
+            host_downtimes = []
+            service_downtimes = []
+
+            for dt in downtimes:
+                attrs = dt.get("attrs", {})
+                if not attrs.get("service_name"):
+                    host_downtimes.append(attrs)
+                else:
+                    service_downtimes.append(attrs)
+
+            if host_downtimes:
+                output.append("## Host Downtimes")
+                output.append("")
+                for dt in host_downtimes:
+                    name = dt.get("name", "Unknown")
+                    host = dt.get("host_name", "Unknown")
+                    author = dt.get("author", "Unknown")
+                    comment = dt.get("comment", "")
+                    start_time = datetime.fromtimestamp(dt.get("start_time", 0)).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                    end_time = datetime.fromtimestamp(dt.get("end_time", 0)).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+
+                    # Check if active
+                    now = datetime.now().timestamp()
+                    is_active = dt.get("start_time", 0) <= now < dt.get("end_time", 0)
+                    status = "🟢 ACTIVE" if is_active else "⏰ SCHEDULED"
+
+                    output.append(f"**{host}** - {status}")
+                    output.append(f"  Name: {name}")
+                    output.append(f"  Start: {start_time}")
+                    output.append(f"  End: {end_time}")
+                    output.append(f"  Author: {author}")
+                    if comment:
+                        output.append(f"  Comment: {comment}")
+                    output.append("")
+
+            if service_downtimes:
+                output.append("## Service Downtimes")
+                output.append("")
+                for dt in service_downtimes:
+                    name = dt.get("name", "Unknown")
+                    host = dt.get("host_name", "Unknown")
+                    service = dt.get("service_name", "Unknown")
+                    author = dt.get("author", "Unknown")
+                    comment = dt.get("comment", "")
+                    start_time = datetime.fromtimestamp(dt.get("start_time", 0)).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                    end_time = datetime.fromtimestamp(dt.get("end_time", 0)).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+
+                    # Check if active
+                    now = datetime.now().timestamp()
+                    is_active = dt.get("start_time", 0) <= now < dt.get("end_time", 0)
+                    status = "🟢 ACTIVE" if is_active else "⏰ SCHEDULED"
+
+                    output.append(f"**{host}!{service}** - {status}")
+                    output.append(f"  Name: {name}")
+                    output.append(f"  Start: {start_time}")
+                    output.append(f"  End: {end_time}")
+                    output.append(f"  Author: {author}")
+                    if comment:
+                        output.append(f"  Comment: {comment}")
+                    output.append("")
+
+            return [TextContent(type="text", text="\n".join(output))]
+
+        except Icinga2APIError as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Failed to list downtimes: {str(e)}\n\n"
+                    "Please check your configuration and try again.",
+                )
+            ]
+
+
+async def handle_remove_downtime(params: RemoveDowntimeInput) -> list[TextContent]:
+    """Handle remove_downtime tool call."""
+    client = get_icinga2_client()
+
+    # Build filter expression based on filter_type
+    if params.filter_type == "name":
+        filter_expr = f'downtime.name=="{params.filter_value}"'
+        target_desc = f"downtime '{params.filter_value}'"
+    elif params.filter_type == "host":
+        filter_expr = f'downtime.host_name=="{params.filter_value}" && downtime.service_name==""'
+        target_desc = f"all host downtimes for '{params.filter_value}'"
+    elif params.filter_type == "service":
+        # Service format: hostname!servicename
+        if "!" in params.filter_value:
+            host, service = params.filter_value.split("!", 1)
+            filter_expr = (
+                f'downtime.host_name=="{host}" && downtime.service_name=="{service}"'
+            )
+        else:
+            filter_expr = f'downtime.service_name=="{params.filter_value}"'
+        target_desc = f"all service downtimes for '{params.filter_value}'"
+    elif params.filter_type == "all_host":
+        filter_expr = 'downtime.service_name==""'
+        target_desc = "all host downtimes"
+    else:  # all_service
+        filter_expr = 'downtime.service_name!=""'
+        target_desc = "all service downtimes"
+
+    async with client:
+        try:
+            result = await client.remove_downtime(filter_expr=filter_expr)
+
+            # Count affected downtimes
+            status = result.get("results", [])
+            affected_count = len([s for s in status if s.get("code") == 200])
+
+            output = [
+                f"✅ Downtime(s) removed successfully",
+                f"",
+                f"**Target:** {target_desc}",
+                f"**Removed:** {affected_count} downtime(s)",
+            ]
+
+            if affected_count == 0:
+                output.append("")
+                output.append("⚠️ Note: No downtimes matched the criteria.")
+
+            return [TextContent(type="text", text="\n".join(output))]
+
+        except Icinga2APIError as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Failed to remove downtime(s): {str(e)}\n\n"
+                    "Please verify the filter criteria and try again.",
                 )
             ]
