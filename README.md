@@ -37,8 +37,8 @@ Configure the server using environment variables:
 - `ICINGA2_SSH_USER`: SSH username
 - `ICINGA2_SSH_KEY_PATH`: Path to SSH private key
 - `ICINGA2_SSH_PASSWORD`: SSH password (if not using key)
-- `ICINGA2_REMOTE_HOST`: Icinga2 host as seen from SSH server (default: localhost)
-- `ICINGA2_REMOTE_PORT`: Icinga2 API port (default: 5665)
+
+Note: When using SSH tunnel, the remote Icinga2 host and port are automatically extracted from `ICINGA2_API_URL`.
 
 See `.env.example` for a complete configuration template.
 
@@ -73,19 +73,19 @@ See `.env.example` for a complete configuration template.
       "command": "python",
       "args": ["-m", "icinga2_mcp"],
       "env": {
-        "ICINGA2_API_URL": "https://icinga.example.com:5665",
+        "ICINGA2_API_URL": "https://icinga.internal:5665",
         "ICINGA2_API_USER": "mcp-user",
         "ICINGA2_API_PASSWORD": "your-password",
         "ICINGA2_SSH_HOST": "bastion.example.com",
         "ICINGA2_SSH_USER": "ssh-user",
-        "ICINGA2_SSH_KEY_PATH": "/home/user/.ssh/id_rsa",
-        "ICINGA2_REMOTE_HOST": "localhost",
-        "ICINGA2_REMOTE_PORT": "5665"
+        "ICINGA2_SSH_KEY_PATH": "/home/user/.ssh/id_rsa"
       }
     }
   }
 }
 ```
+
+The tunnel will automatically forward to `icinga.internal:5665` as specified in the `ICINGA2_API_URL`.
 
 ### Available Tools
 

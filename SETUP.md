@@ -131,7 +131,8 @@ If your Icinga2 API is not publicly accessible (behind a firewall or on a privat
 
    ```
    # Required: Icinga2 API credentials
-   ICINGA2_API_URL=https://icinga.example.com:5665
+   # Note: The host and port in ICINGA2_API_URL specify where the Icinga2 API is located
+   ICINGA2_API_URL=https://icinga.internal:5665
    ICINGA2_API_USER=mcp-user
    ICINGA2_API_PASSWORD=your-secure-password
 
@@ -139,35 +140,33 @@ If your Icinga2 API is not publicly accessible (behind a firewall or on a privat
    ICINGA2_SSH_HOST=bastion.example.com
    ICINGA2_SSH_USER=your-ssh-user
    ICINGA2_SSH_KEY_PATH=/home/user/.ssh/icinga2_mcp
-   ICINGA2_REMOTE_HOST=localhost
-   ICINGA2_REMOTE_PORT=5665
    ```
 
 **Configuration Notes:**
 
+- `ICINGA2_API_URL`: The Icinga2 API location (host and port are automatically used for the tunnel destination)
 - `ICINGA2_SSH_HOST`: The SSH server you'll tunnel through (bastion host or Icinga2 server)
 - `ICINGA2_SSH_USER`: SSH username for the tunnel
 - `ICINGA2_SSH_KEY_PATH`: Path to your SSH private key
-- `ICINGA2_REMOTE_HOST`:
-  - Use `localhost` if Icinga2 is running on the SSH server
-  - Use internal IP/hostname if Icinga2 is on a different server accessible from SSH server
-- `ICINGA2_REMOTE_PORT`: Icinga2 API port (typically 5665)
+
+**How SSH Tunneling Works:**
+
+The tunnel automatically forwards to the host and port specified in `ICINGA2_API_URL` as seen from the SSH server.
 
 **Example Scenarios:**
 
 *Scenario 1: Icinga2 running on the SSH server*
 ```
+ICINGA2_API_URL=https://localhost:5665
 ICINGA2_SSH_HOST=icinga.internal.example.com
-ICINGA2_REMOTE_HOST=localhost
-ICINGA2_REMOTE_PORT=5665
 ```
 
 *Scenario 2: Icinga2 on a separate internal server*
 ```
+ICINGA2_API_URL=https://icinga.internal:5665
 ICINGA2_SSH_HOST=bastion.example.com
-ICINGA2_REMOTE_HOST=10.0.1.100
-ICINGA2_REMOTE_PORT=5665
 ```
+In this scenario, the tunnel will connect to `icinga.internal:5665` from the bastion server.
 
 ## Step 4: Configure Claude Desktop (or your MCP client)
 
@@ -205,14 +204,12 @@ ICINGA2_REMOTE_PORT=5665
       "command": "python",
       "args": ["-m", "icinga2_mcp"],
       "env": {
-        "ICINGA2_API_URL": "https://icinga.example.com:5665",
+        "ICINGA2_API_URL": "https://icinga.internal:5665",
         "ICINGA2_API_USER": "mcp-user",
         "ICINGA2_API_PASSWORD": "your-secure-password",
         "ICINGA2_SSH_HOST": "bastion.example.com",
         "ICINGA2_SSH_USER": "ssh-user",
-        "ICINGA2_SSH_KEY_PATH": "/home/user/.ssh/icinga2_mcp",
-        "ICINGA2_REMOTE_HOST": "localhost",
-        "ICINGA2_REMOTE_PORT": "5665"
+        "ICINGA2_SSH_KEY_PATH": "/home/user/.ssh/icinga2_mcp"
       }
     }
   }

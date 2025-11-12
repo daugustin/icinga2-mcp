@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
+from urllib.parse import urlparse
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent
@@ -496,14 +497,17 @@ def get_icinga2_client() -> Icinga2Client:
       - ICINGA2_SSH_USER: SSH username
       - ICINGA2_SSH_KEY_PATH: Path to SSH private key
       - ICINGA2_SSH_PASSWORD: SSH password (if not using key)
-      - ICINGA2_REMOTE_HOST: Icinga2 host as seen from SSH server (default: localhost)
-      - ICINGA2_REMOTE_PORT: Icinga2 API port (default: 5665)
 
     Returns:
         Configured Icinga2Client instance
 
     Raises:
         ValueError: If required environment variables are missing
+
+    Note:
+        When using SSH tunnel, the remote host and port are extracted from ICINGA2_API_URL.
+        For example, if ICINGA2_API_URL is "https://icinga.example.com:5665", the tunnel
+        will forward to icinga.example.com:5665 as seen from the SSH server.
     """
     api_url = os.getenv("ICINGA2_API_URL")
     api_user = os.getenv("ICINGA2_API_USER")
@@ -537,8 +541,6 @@ def get_icinga2_client() -> Icinga2Client:
         ssh_user = os.getenv("ICINGA2_SSH_USER")
         ssh_key_path = os.getenv("ICINGA2_SSH_KEY_PATH")
         ssh_password = os.getenv("ICINGA2_SSH_PASSWORD")
-        remote_host = os.getenv("ICINGA2_REMOTE_HOST", "localhost")
-        remote_port = int(os.getenv("ICINGA2_REMOTE_PORT", "5665"))
 
         if not ssh_user:
             raise ValueError(
@@ -549,6 +551,21 @@ def get_icinga2_client() -> Icinga2Client:
             raise ValueError(
                 "Either ICINGA2_SSH_KEY_PATH or ICINGA2_SSH_PASSWORD is required for SSH authentication"
             )
+
+        # Parse the API URL to extract the remote host and port
+        parsed_url = urlparse(api_url)
+        remote_host = parsed_url.hostname
+        remote_port = parsed_url.port
+
+        if not remote_host:
+            raise ValueError(
+                f"Could not parse hostname from ICINGA2_API_URL: {api_url}"
+            )
+
+        # Default to 5665 if no port specified (standard Icinga2 API port)
+        if not remote_port:
+            remote_port = 5665
+            logger.info(f"No port specified in API URL, using default Icinga2 port: {remote_port}")
 
         # Create SSH tunnel
         ssh_tunnel = SSHTunnel(
