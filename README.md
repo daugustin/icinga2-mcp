@@ -5,8 +5,11 @@ A Model Context Protocol (MCP) server for interacting with Icinga2 monitoring sy
 ## Features
 
 - **Query Monitoring Status**: List and search hosts and services with flexible filtering
-- **Manage Downtimes**: Schedule maintenance windows for hosts and services
+- **Manage Downtimes**: Schedule, list, and cancel maintenance windows for single or multiple hosts/services
 - **Handle Alerts**: Acknowledge problems with customizable comments
+- **Check Management**: Reschedule checks to run immediately, with support for bulk operations by state or pattern
+- **Event Monitoring**: Query recent state changes and problem events with configurable time ranges
+- **Passive Checks**: Submit external check results for hosts and services with performance data
 - **Flexible Detail Levels**: Control response verbosity to optimize context usage
 - **SSH Tunnel Support**: Access non-public Icinga2 APIs through SSH tunneling
 
@@ -92,11 +95,26 @@ See `.env.example` for a complete configuration template.
 - `list_services`: Query services with filtering and detail levels
 - `get_host_details`: Get comprehensive information about a specific host
 - `get_service_details`: Get comprehensive information about a specific service
+- `query_events`: Query recent events (state changes, problems) with configurable time ranges
 
-#### Operations
+#### Downtime Management
 
-- `schedule_downtime`: Schedule maintenance downtime for hosts or services
-- `acknowledge_problem`: Acknowledge a host or service problem
+- `schedule_downtime`: Schedule maintenance downtime for single or multiple hosts/services
+- `list_downtimes`: List all scheduled and active downtimes with filtering options
+- `remove_downtime`: Cancel/remove downtimes by name, host, service, or bulk operations
+
+#### Problem Management
+
+- `acknowledge_problem`: Acknowledge a host or service problem with custom comments
+
+#### Check Operations
+
+- `reschedule_check`: Force immediate check execution for hosts/services
+  - Supports filtering by name, state (critical, warning, etc.), or pattern matching
+  - Useful for bulk check scheduling (e.g., all critical services)
+- `submit_passive_check`: Submit external check results for passive checks
+  - Supports both host checks (up/down) and service checks (ok/warning/critical/unknown)
+  - Includes optional performance data and check source tracking
 
 ## Detail Levels
 
