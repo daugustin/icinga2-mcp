@@ -154,7 +154,3 @@ Format code:
 black src/
 ruff check src/
 ```
-
-## License
-
-MIT
