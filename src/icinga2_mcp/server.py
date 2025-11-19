@@ -660,7 +660,7 @@ def format_host_normal(host: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_host_detailed(host: Dict[str, Any]) -> str:
+def format_host_detailed(host: Dict[str, Any], comments: List[Dict[str, Any]] = None) -> str:
     """Format host information in detailed level."""
     attrs = host.get("attrs", {})
     name = attrs.get("name", "Unknown")
@@ -687,8 +687,12 @@ def format_host_detailed(host: Dict[str, Any]) -> str:
 
     # Add acknowledgment details
     if attrs.get("acknowledgement", 0) != 0:
-        ack_comment = attrs.get("acknowledgement_last_change", "")
-        lines.append(f"  ⚠️ Acknowledged: {ack_comment}")
+        lines.append("  ⚠️ Acknowledged")
+        if comments:
+            for comment in comments:
+                author = comment.get("attrs", {}).get("author", "Unknown")
+                text = comment.get("attrs", {}).get("text", "")
+                lines.append(f"    - {author}: {text}")
 
     # Add downtime details
     if attrs.get("downtime_depth", 0) > 0:
@@ -743,7 +747,7 @@ def format_service_normal(service: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_service_detailed(service: Dict[str, Any]) -> str:
+def format_service_detailed(service: Dict[str, Any], comments: List[Dict[str, Any]] = None) -> str:
     """Format service information in detailed level."""
     attrs = service.get("attrs", {})
     name = attrs.get("name", "Unknown")
@@ -776,6 +780,11 @@ def format_service_detailed(service: Dict[str, Any]) -> str:
     # Add acknowledgment details
     if attrs.get("acknowledgement", 0) != 0:
         lines.append("  ⚠️ Acknowledged")
+        if comments:
+            for comment in comments:
+                author = comment.get("attrs", {}).get("author", "Unknown")
+                text = comment.get("attrs", {}).get("text", "")
+                lines.append(f"    - {author}: {text}")
 
     # Add downtime details
     if attrs.get("downtime_depth", 0) > 0:
@@ -1088,7 +1097,15 @@ async def handle_get_host_details(params: GetHostDetailsInput) -> list[TextConte
             return [TextContent(type="text", text=f"Host '{params.host_name}' not found.")]
 
         # Format detailed output
-        output = format_host_detailed(hosts[0])
+        host = hosts[0]
+        comments = []
+        
+        # Fetch comments if acknowledged
+        if host.get("attrs", {}).get("acknowledgement", 0) != 0:
+            comment_filter = f'comment.host_name == "{params.host_name}" && comment.service_name == ""'
+            comments = await client.query_objects("Comment", filters=comment_filter)
+
+        output = format_host_detailed(host, comments)
 
         return [TextContent(type="text", text=output)]
 
@@ -1114,7 +1131,15 @@ async def handle_get_service_details(params: GetServiceDetailsInput) -> list[Tex
             ]
 
         # Format detailed output
-        output = format_service_detailed(services[0])
+        service = services[0]
+        comments = []
+
+        # Fetch comments if acknowledged
+        if service.get("attrs", {}).get("acknowledgement", 0) != 0:
+            comment_filter = f'comment.host_name == "{params.host_name}" && comment.service_name == "{params.service_name}"'
+            comments = await client.query_objects("Comment", filters=comment_filter)
+
+        output = format_service_detailed(service, comments)
 
         return [TextContent(type="text", text=output)]
 
