@@ -456,3 +456,129 @@ class Icinga2Client:
             payload["ttl"] = ttl
 
         return await self._request("POST", "/actions/process-check-result", payload)
+
+    async def get_status(self, component: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get Icinga2 system status.
+
+        Args:
+            component: Optional component to filter by (e.g., "IcingaApplication")
+
+        Returns:
+            Status information
+        """
+        url = "/status"
+        if component:
+            url += f"/{component}"
+
+        return await self._request("GET", url)
+
+    async def add_comment(
+        self,
+        object_type: str,
+        filter_expr: str,
+        author: str,
+        comment: str,
+        expiry: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Add a comment to host(s) or service(s).
+
+        Args:
+            object_type: "Host" or "Service"
+            filter_expr: Filter to select the target object(s)
+            author: Name of the author
+            comment: Comment text
+            expiry: Optional expiry timestamp
+
+        Returns:
+            Result of operation
+        """
+        params = {
+            "author": author,
+            "comment": comment,
+        }
+        if expiry:
+            params["expiry"] = expiry
+
+        return await self.perform_action("add-comment", object_type, filter_expr, params)
+
+    async def remove_comment(
+        self,
+        comment_name: Optional[str] = None,
+        filter_expr: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Remove comment(s).
+
+        Args:
+            comment_name: Specific comment name to remove
+            filter_expr: Filter expression to select multiple comments
+
+        Returns:
+            Result of operation
+        """
+        if comment_name:
+            # When removing by name, we use the specific endpoint behavior or filter
+            # The API supports remove-comment with 'comment' parameter for name, OR filter
+            # We'll use the generic action wrapper, but need to construct payload carefully
+            params = {"comment": comment_name}
+            # Generic perform_action expects object_type and filter.
+            # But remove-comment can take a 'comment' param directly without type/filter if name is unique?
+            # Actually, per docs: "In addition to these parameters a filter must be provided. The valid types for this action are Host, Service and Comment."
+            # If we have a specific comment name, we can use type=Comment and filter by name.
+            return await self._request(
+                "POST", "/actions/remove-comment", {"comment": comment_name}
+            )
+
+        if not filter_expr:
+            raise ValueError("Either comment_name or filter_expr must be provided")
+
+        # For bulk removal via filter
+        # We default to removing "Comment" objects if not specified, but typically
+        # the user might want to remove comments from Hosts/Services.
+        # The API docs say: "valid types for this action are Host, Service and Comment"
+        # We will assume "Comment" type for generic removal if not specified in filter.
+        # But here we just pass the filter to the action.
+        # Let's assume the caller constructs a filter appropriate for the type they want.
+        # However, perform_action requires an object_type.
+        # If the user provides a filter like 'host.name=="foo"', type should be Host?
+        # Or should we let the caller specify type?
+        # To keep it simple, we'll expose a flexible method or default to Comment type which is safest for removing comments.
+
+        payload = {
+            "type": "Comment", # Defaulting to Comment type for filter-based removal
+            "filter": filter_expr
+        }
+        return await self._request("POST", "/actions/remove-comment", payload)
+
+    async def send_custom_notification(
+        self,
+        object_type: str,
+        filter_expr: str,
+        author: str,
+        comment: str,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Send a custom notification.
+
+        Args:
+            object_type: "Host" or "Service"
+            filter_expr: Filter to select the target object(s)
+            author: Name of the author
+            comment: Notification text
+            force: Force notification even if downtime/disabled
+
+        Returns:
+            Result of operation
+        """
+        params = {
+            "author": author,
+            "comment": comment,
+            "force": force,
+        }
+
+        return await self.perform_action(
+            "send-custom-notification", object_type, filter_expr, params
+        )
