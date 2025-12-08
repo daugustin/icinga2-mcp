@@ -473,6 +473,124 @@ class SubmitPassiveCheckInput(BaseModel):
         return v
 
 
+class AddCommentInput(BaseModel):
+    """Input for adding comments."""
+
+    object_type: Literal["host", "service"] = Field(
+        ...,
+        description="Type of object to comment on: host or service",
+    )
+    host_name: str = Field(
+        ...,
+        description="Name of the host",
+        examples=["web01.example.com"],
+        min_length=1,
+    )
+    service_name: Optional[str] = Field(
+        None,
+        description="Name of the service (required if object_type is 'service')",
+        examples=["HTTP", "MySQL"],
+    )
+    author: str = Field(
+        ...,
+        description="Author of the comment",
+        examples=["admin", "ops-team"],
+        min_length=1,
+    )
+    comment: str = Field(
+        ...,
+        description="Comment text",
+        examples=["Investigating issue", "Waiting for parts"],
+        min_length=1,
+    )
+
+    @field_validator("service_name")
+    @classmethod
+    def validate_service_name(cls, v: Optional[str], info) -> Optional[str]:
+        """Validate that service_name is provided when object_type is 'service'."""
+        if info.data.get("object_type") == "service" and not v:
+            raise ValueError("service_name is required when object_type is 'service'")
+        return v
+
+
+class RemoveCommentInput(BaseModel):
+    """Input for removing comments."""
+
+    filter_type: Literal["name", "host", "service", "all_host", "all_service"] = Field(
+        ...,
+        description=(
+            "How to select comments to remove:\n"
+            "- name: Remove specific comment by name (legacy_id not supported)\n"
+            "- host: Remove all comments for a specific host\n"
+            "- service: Remove all comments for a specific service\n"
+            "- all_host: Remove all host comments\n"
+            "- all_service: Remove all service comments"
+        ),
+    )
+    filter_value: Optional[str] = Field(
+        None,
+        description=(
+            "Value for the filter (required for 'name', 'host', 'service'):\n"
+            "- For 'name': exact comment name (e.g., 'web01!1234')\n"
+            "- For 'host': host name\n"
+            "- For 'service': service name (format: hostname!servicename)"
+        ),
+    )
+
+    @field_validator("filter_value")
+    @classmethod
+    def validate_filter_value(cls, v: Optional[str], info) -> Optional[str]:
+        """Validate that filter_value is provided when required."""
+        filter_type = info.data.get("filter_type")
+        if filter_type in ["name", "host", "service"] and not v:
+            raise ValueError(f"filter_value is required when filter_type is '{filter_type}'")
+        return v
+
+
+class SendNotificationInput(BaseModel):
+    """Input for sending custom notifications."""
+
+    object_type: Literal["host", "service"] = Field(
+        ...,
+        description="Type of object to notify for: host or service",
+    )
+    host_name: str = Field(
+        ...,
+        description="Name of the host",
+        examples=["web01.example.com"],
+        min_length=1,
+    )
+    service_name: Optional[str] = Field(
+        None,
+        description="Name of the service (required if object_type is 'service')",
+        examples=["HTTP", "MySQL"],
+    )
+    author: str = Field(
+        ...,
+        description="Author of the notification",
+        examples=["admin", "ops-team"],
+        min_length=1,
+    )
+    comment: str = Field(
+        ...,
+        description="Notification text to be included in the message",
+        examples=["Manual notification test", "Broadcasting maintenance info"],
+        min_length=1,
+    )
+    force: bool = Field(
+        False,
+        description="Force notification even if notifications are disabled or object is in downtime",
+    )
+
+    @field_validator("service_name")
+    @classmethod
+    def validate_service_name(cls, v: Optional[str], info) -> Optional[str]:
+        """Validate that service_name is provided when object_type is 'service'."""
+        if info.data.get("object_type") == "service" and not v:
+            raise ValueError("service_name is required when object_type is 'service'")
+        return v
+
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -914,6 +1032,44 @@ async def list_tools() -> list[Tool]:
             ),
             inputSchema=SubmitPassiveCheckInput.model_json_schema(),
         ),
+        Tool(
+            name="get_status",
+            description=(
+                "Get current Icinga2 system status and statistics. "
+                "Returns component status, version information, and health metrics. "
+                "Useful for verifying that the monitoring system itself is healthy."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="add_comment",
+            description=(
+                "Add a comment to a host or service. "
+                "Comments are useful for leaving notes for other operators, such as "
+                "'waiting for parts' or 'investigating'. "
+                "Comments persist until manually removed."
+            ),
+            inputSchema=AddCommentInput.model_json_schema(),
+        ),
+        Tool(
+            name="remove_comment",
+            description=(
+                "Remove one or multiple comments. "
+                "Supports removing specific comments by name or bulk removal by host/service. "
+                "Use this to clean up old or obsolete comments."
+            ),
+            inputSchema=RemoveCommentInput.model_json_schema(),
+        ),
+        Tool(
+            name="send_notification",
+            description=(
+                "Send a custom notification for a host or service. "
+                "This triggers a notification to configured contacts, containing your custom message. "
+                "Useful for manually alerting teams about issues or broadcasting information. "
+                "Can optionally force notification even if downtimes are active."
+            ),
+            inputSchema=SendNotificationInput.model_json_schema(),
+        ),
     ]
 
 
@@ -943,6 +1099,14 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return await handle_remove_downtime(RemoveDowntimeInput(**arguments))
         elif name == "submit_passive_check":
             return await handle_submit_passive_check(SubmitPassiveCheckInput(**arguments))
+        elif name == "get_status":
+            return await handle_get_status()
+        elif name == "add_comment":
+            return await handle_add_comment(AddCommentInput(**arguments))
+        elif name == "remove_comment":
+            return await handle_remove_comment(RemoveCommentInput(**arguments))
+        elif name == "send_notification":
+            return await handle_send_notification(SendNotificationInput(**arguments))
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
@@ -1809,5 +1973,233 @@ async def handle_submit_passive_check(
                     type="text",
                     text=f"❌ Failed to submit passive check result: {str(e)}\n\n"
                     "Please verify the target exists and is configured for passive checks.",
+                )
+            ]
+
+
+async def handle_get_status() -> list[TextContent]:
+    """Handle get_status tool call."""
+    client = get_icinga2_client()
+
+    async with client:
+        try:
+            status = await client.get_status("IcingaApplication")
+
+            # The structure is usually {"results": [{"status": {"icingaapplication": {"app": {...}}}}]}
+            results = status.get("results", [])
+            if not results:
+                 return [TextContent(type="text", text="No status information returned.")]
+
+            app_info = results[0].get("status", {}).get("icingaapplication", {}).get("app", {})
+
+            output = [
+                "# Icinga2 System Status",
+                "",
+                f"- **Node Name:** {app_info.get('node_name', 'Unknown')}",
+                f"- **Version:** {app_info.get('version', 'Unknown')}",
+                f"- **PID:** {app_info.get('pid', 'Unknown')}",
+            ]
+
+            # Start time
+            start_ts = app_info.get("program_start")
+            if start_ts:
+                start_time = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M:%S")
+                output.append(f"- **Started:** {start_time}")
+
+            # Feature flags
+            features = []
+            if app_info.get("enable_notifications"): features.append("Notifications")
+            if app_info.get("enable_event_handlers"): features.append("Event Handlers")
+            if app_info.get("enable_flapping"): features.append("Flapping Detection")
+            if app_info.get("enable_host_checks"): features.append("Host Checks")
+            if app_info.get("enable_service_checks"): features.append("Service Checks")
+
+            output.append("")
+            output.append("**Enabled Features:**")
+            if features:
+                for feature in features:
+                    output.append(f"- ✅ {feature}")
+            else:
+                output.append("No major features enabled.")
+
+            return [TextContent(type="text", text="\n".join(output))]
+
+        except Icinga2APIError as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Failed to retrieve status: {str(e)}"
+                )
+            ]
+
+
+async def handle_add_comment(params: AddCommentInput) -> list[TextContent]:
+    """Handle add_comment tool call."""
+    client = get_icinga2_client()
+
+    # Determine object type and filter
+    if params.object_type == "host":
+        object_type = "Host"
+        filter_expr = f'host.name=="{params.host_name}"'
+        target = params.host_name
+    else:
+        object_type = "Service"
+        # Service format: hostname!servicename
+        filter_expr = f'host.name=="{params.host_name}" && service.name=="{params.service_name}"'
+        target = f"{params.host_name}!{params.service_name}"
+
+    async with client:
+        try:
+            result = await client.add_comment(
+                object_type=object_type,
+                filter_expr=filter_expr,
+                author=params.author,
+                comment=params.comment
+            )
+
+            # Check results
+            status_results = result.get("results", [])
+            success_count = len([s for s in status_results if s.get("code") == 200])
+
+            if success_count == 0:
+                 return [
+                    TextContent(
+                        type="text",
+                        text=f"❌ Failed to add comment to {target}.\n\n"
+                        "Please verify the object exists."
+                    )
+                ]
+
+            output = [
+                f"✅ Comment added successfully",
+                f"",
+                f"**Target:** {target}",
+                f"**Author:** {params.author}",
+                f"**Comment:** {params.comment}",
+            ]
+
+            return [TextContent(type="text", text="\n".join(output))]
+
+        except Icinga2APIError as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Failed to add comment: {str(e)}"
+                )
+            ]
+
+
+async def handle_remove_comment(params: RemoveCommentInput) -> list[TextContent]:
+    """Handle remove_comment tool call."""
+    client = get_icinga2_client()
+
+    comment_name = None
+    filter_expr = None
+    target_desc = ""
+
+    if params.filter_type == "name":
+        comment_name = params.filter_value
+        target_desc = f"comment '{params.filter_value}'"
+    elif params.filter_type == "host":
+        filter_expr = f'comment.host_name=="{params.filter_value}" && comment.service_name==""'
+        target_desc = f"all comments for host '{params.filter_value}'"
+    elif params.filter_type == "service":
+        if "!" in params.filter_value:
+             host, service = params.filter_value.split("!", 1)
+             filter_expr = f'comment.host_name=="{host}" && comment.service_name=="{service}"'
+        else:
+             filter_expr = f'comment.service_name=="{params.filter_value}"'
+        target_desc = f"all comments for service '{params.filter_value}'"
+    elif params.filter_type == "all_host":
+        filter_expr = 'comment.service_name==""'
+        target_desc = "all host comments"
+    else: # all_service
+        filter_expr = 'comment.service_name!=""'
+        target_desc = "all service comments"
+
+    async with client:
+        try:
+            result = await client.remove_comment(
+                comment_name=comment_name,
+                filter_expr=filter_expr
+            )
+
+            # Count affected
+            status = result.get("results", [])
+            affected_count = len([s for s in status if s.get("code") == 200])
+
+            output = [
+                f"✅ Comment(s) removed successfully",
+                f"",
+                f"**Target:** {target_desc}",
+                f"**Removed:** {affected_count} comment(s)",
+            ]
+
+            if affected_count == 0:
+                output.append("")
+                output.append("⚠️ Note: No comments matched the criteria.")
+
+            return [TextContent(type="text", text="\n".join(output))]
+
+        except Icinga2APIError as e:
+             return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Failed to remove comment(s): {str(e)}"
+                )
+            ]
+
+
+async def handle_send_notification(params: SendNotificationInput) -> list[TextContent]:
+    """Handle send_notification tool call."""
+    client = get_icinga2_client()
+
+    if params.object_type == "host":
+        object_type = "Host"
+        filter_expr = f'host.name=="{params.host_name}"'
+        target = params.host_name
+    else:
+        object_type = "Service"
+        filter_expr = f'host.name=="{params.host_name}" && service.name=="{params.service_name}"'
+        target = f"{params.host_name}!{params.service_name}"
+
+    async with client:
+        try:
+            result = await client.send_custom_notification(
+                object_type=object_type,
+                filter_expr=filter_expr,
+                author=params.author,
+                comment=params.comment,
+                force=params.force
+            )
+
+            status_results = result.get("results", [])
+            success_count = len([s for s in status_results if s.get("code") == 200])
+
+            if success_count == 0:
+                 return [
+                    TextContent(
+                        type="text",
+                        text=f"❌ Failed to send notification for {target}.\n\n"
+                        "Please verify the object exists and has notifications enabled/contacts assigned."
+                    )
+                ]
+
+            output = [
+                f"✅ Notification sent successfully",
+                f"",
+                f"**Target:** {target}",
+                f"**Author:** {params.author}",
+                f"**Message:** {params.comment}",
+                f"**Force:** {params.force}",
+            ]
+
+            return [TextContent(type="text", text="\n".join(output))]
+
+        except Icinga2APIError as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Failed to send notification: {str(e)}"
                 )
             ]
